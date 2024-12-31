@@ -4,7 +4,7 @@ use bytes::Bytes;
 use futures::{pin_mut, ready, Stream, StreamExt};
 use ratatui::{
     backend::CrosstermBackend,
-    layout::Rect,
+    layout::{Rect, Size},
     widgets::{Block, Borders},
     Terminal as TuiTerminal,
 };
@@ -19,12 +19,15 @@ struct Terminal {
 }
 
 impl Terminal {
-    async fn new(
-        width: u16,
-        height: u16,
-        tui: TuiTerminal<CrosstermBackend<std::io::Stdout>>,
-    ) -> Self {
-        let parser = vt100::Parser::new(height, width, height as usize * 128);
+    async fn new(tui: TuiTerminal<CrosstermBackend<std::io::Stdout>>) -> Self {
+        let size = match tui.size() {
+            Ok(s) => s,
+            Err(_) => Size {
+                width: 80,
+                height: 24,
+            },
+        };
+        let parser = vt100::Parser::new(size.height, size.width, size.height as usize * 128);
         let mut this = Self { parser, tui };
         this.update().await;
         this
@@ -51,12 +54,35 @@ impl Terminal {
     }
 
     async fn update(&mut self) {
+        // Try to auto resize terminal and parser
+        let term_size = if self.tui.autoresize().is_ok() {
+            match self.tui.size() {
+                Ok(s) => s,
+                Err(_) => Size {
+                    width: 80,
+                    height: 24,
+                },
+            }
+        } else {
+            // Fallback
+            Size {
+                width: 80,
+                height: 24,
+            }
+        };
+        self.parser.set_size(term_size.height, term_size.width);
+
         let screen = self.parser.screen();
         let term = ui_term::UiTerm::new(screen);
         self.tui
             .draw(|f| {
                 let area = f.area();
-                let term_area = Rect::new(0, 0, 80.min(area.width), 24.min(area.height));
+                let term_area = Rect::new(
+                    0,
+                    0,
+                    term_size.width.min(area.width),
+                    term_size.height.min(area.height),
+                );
                 f.render_widget(term, term_area);
                 if !screen.hide_cursor() && screen.scrollback() == 0 {
                     let cursor = screen.cursor_position();
@@ -165,7 +191,7 @@ pub async fn run_ui(
     )
     .unwrap();
 
-    let mut terminal = Terminal::new(80, 24, terminal).await;
+    let mut terminal = Terminal::new(terminal).await;
     let mut console = match console {
         Some(console) => device.console_by_name(&console),
         None => device.console(),
